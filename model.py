@@ -55,6 +55,8 @@ BATCH_SIZE = int(config.get('run_properties', 'BATCH_SIZE'))
 MODEL_SIZE = int(config.get('run_properties', 'MODEL_SIZE'))
 num_layers = int(config.get('run_properties','num_layers'))
 h = int(config.get('run_properties','h'))
+num_classes = int(config.get('run_properties','num_classes'))
+
 logging.info("Imported the properties from the config file ")
 
 es_data['language'] = 'spanish'
@@ -149,7 +151,7 @@ def encode_transformer_data(data):
     data['label'] = labelEncoder.fit_transform(data['language'])
     return data['label']"""
     onehot_repr = [one_hot(words, vocab_size) for words in data['clean_text']]
-    embedded_docs = pad_sequences(onehot_repr, padding='pre', maxlen=sent_leng)
+    embedded_docs = pad_sequences(onehot_repr, padding='pre', maxlen=num_classes)
     return embedded_docs
 
 logging.info("Extracting the sentences from the data")
@@ -160,7 +162,7 @@ print("labels.shape----->>>>>>>>>>",labels.shape)
 print(padded_sequences.shape)
 
 data = Dataset.from_tensor_slices((padded_sequences, labels))
-data = data.shuffle(20).batch(BATCH_SIZE).prefetch(16)
+data = data.shuffle(20).batch(BATCH_SIZE).prefetch(32)
 '''for d in data:
     print(d)
     break'''
@@ -306,7 +308,7 @@ class Decoder(tf.keras.Model):
 
         embed_out = tf.concat(embed_out, axis=1)
 
-        bot_sub_in = tf.reshape(embed_out,(BATCH_SIZE,100,MODEL_SIZE))
+        bot_sub_in = tf.reshape(embed_out,(BATCH_SIZE,num_classes,MODEL_SIZE))
         logging.info("Created the positional encoding and Bottom Multi head Layers in Decoder ")
         for i in range(self.num_layers):
             # BOTTOM MULTIHEAD SUB LAYER
@@ -369,9 +371,9 @@ binaryentropy = BinaryCrossentropy(
     from_logits=False)
 
 def loss_function(targets, logits):
-    mask = tf.math.logical_not(tf.math.equal(targets, 0))
-    mask = tf.cast(mask, dtype=tf.int64)
-    #loss = crossentropy(targets, logits, sample_weight=mask)
+    logging.info("calculating the loss in the training step")
+    #mask = tf.math.logical_not(tf.math.equal(targets, 0))
+    #mask = tf.cast(mask, dtype=tf.int64)
     loss = binaryentropy(targets,logits)
     return loss
 
@@ -388,6 +390,7 @@ def train_step(source_seq, target_seq, enc_model, dec_model):
 
     variables = enc_model.trainable_variables + dec_model.trainable_variables
     gradients = tape.gradient(loss, variables)
+    logging.info("Using the adam optimizer")
     optimizer.apply_gradients(zip(gradients, variables))
     return loss
 
