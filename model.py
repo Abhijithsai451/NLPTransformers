@@ -9,8 +9,9 @@ import pandas as pd
 import regex as re
 import tensorflow as tf
 from keras.layers import Dense, Embedding, BatchNormalization, Flatten
+from keras.losses import BinaryCrossentropy
 from keras.utils import pad_sequences
-from keras_preprocessing.text import Tokenizer
+from keras_preprocessing.text import Tokenizer, one_hot
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from sklearn.preprocessing import LabelEncoder
@@ -20,6 +21,16 @@ warnings.filterwarnings("ignore")
 
 logging.basicConfig(level=logging.INFO, format='[NLP Transformer] %(process)d-%(levelname)s-%(message)s')
 logging.info("TensorFlow Version:  " + tf.__version__)
+
+gpu = tf.config.list_physical_devices('GPU')
+cpu = tf.config.list_physical_devices('CPU')
+
+try:
+  tf.config.experimental.set_memory_growth(gpu[0], True)
+  tf.config.experimental.set_memory_growth(gpu[0], False)
+except:
+  # Invalid device or cannot modify virtual devices once initialized.
+  pass
 
 config = configparser.RawConfigParser()
 logging.info("Reading the CONFIG file [config_file.properties]")
@@ -133,20 +144,23 @@ def tokenize_data(sentences):
     padded_sequences = pad_sequences(sequences, padding='post')
     return padded_sequences
 def encode_transformer_data(data):
-    logging.info("Encoding the target labels")
+    """logging.info("Encoding the target labels")
     labelEncoder = LabelEncoder()
     data['label'] = labelEncoder.fit_transform(data['language'])
-    return data['label']
+    return data['label']"""
+    onehot_repr = [one_hot(words, vocab_size) for words in data['clean_text']]
+    embedded_docs = pad_sequences(onehot_repr, padding='pre', maxlen=sent_leng)
+    return embedded_docs
 
 logging.info("Extracting the sentences from the data")
 sentences = transformer_data['clean_text']
 padded_sequences = tokenize_data(sentences)
 labels = encode_transformer_data(transformer_data)
-print(labels[0].shape)
+print("labels.shape----->>>>>>>>>>",labels.shape)
 print(padded_sequences.shape)
 
 data = Dataset.from_tensor_slices((padded_sequences, labels))
-data = data.shuffle(20).batch(BATCH_SIZE)
+data = data.shuffle(20).batch(BATCH_SIZE).prefetch(16)
 '''for d in data:
     print(d)
     break'''
@@ -182,7 +196,6 @@ class MultiHeadAttention(tf.keras.Model):
         self.query_size = MODEL_SIZE // h
         self.key_size = MODEL_SIZE // h
         self.value_size = MODEL_SIZE // h
-
         self.h = h
 
         self.wq = [Dense(self.query_size) for _ in range(h)]
@@ -241,7 +254,6 @@ class Encoder(tf.keras.Model):
             embed = self.embedding(tf.expand_dims(sequence[:, i], axis=1))
             sub_in.append(embed + pes[i, :1])
         sub_in = tf.concat(sub_in, axis=1)
-
         for i in range(self.num_layers):
             sub_out = []
 
@@ -280,41 +292,43 @@ class Decoder(tf.keras.Model):
         self.dense_1 = [Dense(MODEL_SIZE * 4, activation='relu') for _ in range(num_layers)]
         self.dense_2 = [Dense(MODEL_SIZE) for _ in range(num_layers)]
         self.ffn_norm = [BatchNormalization() for _ in range(num_layers)]
-        self.flatten_layer = Flatten()
-        self.dense = Dense(vocab_size)
+        self.dense = Dense(1)
+
 
 
     def call(self, sequence, encoder_output):
         # EMBEDDING AND POSITIONAL EMBEDDING
         embed_out = []
-        print("Sequence shape is ----->>>>>>",sequence.shape)
-        for i in range(sequence.shape[1]):
-            embed = self.embedding(tf.expand_dims(sequence[:, i], axis=1))
+
+        for i in range(sequence.shape[0]):
+            embed = self.embedding(sequence[i,:])
             embed_out.append(embed + pes[i, :])
 
         embed_out = tf.concat(embed_out, axis=1)
 
-        bot_sub_in = embed_out
-
+        bot_sub_in = tf.reshape(embed_out,(BATCH_SIZE,100,MODEL_SIZE))
+        logging.info("Created the positional encoding and Bottom Multi head Layers in Decoder ")
         for i in range(self.num_layers):
             # BOTTOM MULTIHEAD SUB LAYER
             bot_sub_out = []
             for j in range(bot_sub_in.shape[1]):
                 values = bot_sub_in[:, :j]
-                attention = self.att_bot[i](tf.expand_dims(bot_sub_in[:, j]), values)
+                attention = self.att_bot[i](tf.expand_dims(bot_sub_in[:,j,:], axis =1), values)
 
                 bot_sub_out.append(attention)
+
             bot_sub_out = tf.concat(bot_sub_out, axis=1)
             bot_sub_out = bot_sub_in + bot_sub_out
             bot_sub_out = self.attb_norm[i](bot_sub_out)
-            logging.info("Created the positional encoding and Bottom Mulit head Layer ")
+
 
             # MIDDLE MULTIHEAD SUB LAYER
             mid_sub_in = bot_sub_out
             mid_sub_out = []
+
             for j in range(mid_sub_in.shape[1]):
                 attention = self.att_mid[i](
-                    tf.expand_dims(mid_sub_in[:, j]), encoder_output)
+                    tf.expand_dims(mid_sub_in[:, j], axis =1), encoder_output)
                 mid_sub_out.append(attention)
 
             mid_sub_out = tf.concat(mid_sub_out, axis=1)
@@ -327,11 +341,11 @@ class Decoder(tf.keras.Model):
             ffn_out = self.dense_2[i](self.dense_1[i](ffn_in))
             ffn_out = ffn_out + ffn_in
             ffn_out = self.ffn_norm[i](ffn_out)
-
             bot_sub_in = ffn_out
-            flat_out = self.flatten_layer(ffn_out)
-        logits = self.dense(flat_out)
-        print(logits.shape)
+
+        flat_out = self.dense(ffn_out)
+
+        logits = tf.squeeze(flat_out,axis=2)
         logging.info("Created the Decoder class")
         return logits
 
@@ -351,31 +365,30 @@ dec_model = Decoder(1, MODEL_SIZE, num_layers, h)
 #-----------------------------------------------------------------------------------------------------------------------
 
 # Loss Function
-crossentropy = tf.keras.losses.CategoricalCrossentropy(
+binaryentropy = BinaryCrossentropy(
     from_logits=False)
 
 def loss_function(targets, logits):
     mask = tf.math.logical_not(tf.math.equal(targets, 0))
     mask = tf.cast(mask, dtype=tf.int64)
-    loss = crossentropy(targets, logits, sample_weight=mask)
-
+    #loss = crossentropy(targets, logits, sample_weight=mask)
+    loss = binaryentropy(targets,logits)
     return loss
 
-optimizer = tf.keras.optimizers.Adam()
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
 
 @tf.function
 def train_step(source_seq, target_seq, enc_model, dec_model):
+
     with tf.GradientTape() as tape:
         encoder_output = enc_model(source_seq)
         decoder_output = dec_model(target_seq, encoder_output)
-        print(decoder_output.shape)
-        print(target_seq.shape)
         loss = loss_function(target_seq, decoder_output)
 
     variables = enc_model.trainable_variables + dec_model.trainable_variables
-    gradients = tape.gradients(loss, variables)
-    optimizer.apply_gradient(zip(gradients, variables))
+    gradients = tape.gradient(loss, variables)
+    optimizer.apply_gradients(zip(gradients, variables))
     return loss
 
 
@@ -395,18 +408,20 @@ def predict(test_seq):
 start_time = time.time()
 
 for e in range(EPOCHS):
-    for batch, (source_seq, target_seq) in enumerate(data.take(-1)):
+    logging.info("Enabling the GPU ")
+    with tf.device('GPU:0'):
+        for batch, (source_seq, target_seq) in enumerate(data.take(-1)):
 
-        loss = train_step(source_seq, target_seq, enc_model, dec_model)
+            loss = train_step(source_seq, target_seq, enc_model, dec_model)
 
-    print('Epoch {} Loss {:.4f}'.format(e+1, loss.numpy()))
+        print('Epoch {} Loss {:.4f}'.format(e+1, loss.numpy()))
 
-    if (e+1) % 10 == 0:
-        end_time = time.time()
-        print('Elapsed Time: {:.2f}s'.format((end_time - start_time)/(e+1)))
-        try:
-            predict()
-        except Exception as e:
-            print(e)
-            continue
+        if (e+1) % 10 == 0:
+            end_time = time.time()
+            print('Elapsed Time: {:.2f}s'.format((end_time - start_time)/(e+1)))
+            try:
+                predict()
+            except Exception as e:
+                print(e)
+                continue
 
