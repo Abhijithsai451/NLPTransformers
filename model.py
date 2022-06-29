@@ -428,3 +428,5 @@ for e in range(EPOCHS):
                 print(e)
                 continue
 
+
+# Using the pretrained model like BERT or any state of art model.
