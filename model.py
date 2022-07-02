@@ -2,7 +2,7 @@ import configparser
 import logging
 import time
 import warnings
-
+import config_file
 import nltk
 import numpy as np
 import pandas as pd
@@ -16,6 +16,10 @@ from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.python.data import Dataset
+
+# Hugging Face Models
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
 
 warnings.filterwarnings("ignore")
 
@@ -32,12 +36,11 @@ except:
   # Invalid device or cannot modify virtual devices once initialized.
   pass
 
-config = configparser.RawConfigParser()
-logging.info("Reading the CONFIG file [config_file.properties]")
-config.read('config_file.properties')
+
+logging.info("Reading the CONFIG file [config_file.py]")
 
 logging.info("Importing the Data from Dataset [Jigsaw Toxic Comments]")
-mul_path = config.get('run_properties', 'data_path')
+mul_path = config_file.data_path
 es_data = pd.read_csv(mul_path + "/jigsaw-toxic-comment-train-google-es-cleaned.csv")
 fr_data = pd.read_csv(mul_path + "/jigsaw-toxic-comment-train-google-fr-cleaned.csv")
 it_data = pd.read_csv(mul_path + "/jigsaw-toxic-comment-train-google-it-cleaned.csv")
@@ -46,16 +49,16 @@ ru_data = pd.read_csv(mul_path + "/jigsaw-toxic-comment-train-google-ru-cleaned.
 tr_data = pd.read_csv(mul_path + "/jigsaw-toxic-comment-train-google-tr-cleaned.csv")
 logging.info("Successfully imported the data from the [Jigsaw Toxic Comments] Dataset")
 
-vocab_size = int(config.get('run_properties', 'vocab_size'))
-sent_leng = int(config.get('run_properties', 'sent_leng'))
-embedding_vector_features = config.get('run_properties', 'embedding_vector_features')
-num_lang = int(config.get('run_properties', 'num_lang'))
-EPOCHS = int(config.get('run_properties', 'EPOCHS'))
-BATCH_SIZE = int(config.get('run_properties', 'BATCH_SIZE'))
-MODEL_SIZE = int(config.get('run_properties', 'MODEL_SIZE'))
-num_layers = int(config.get('run_properties','num_layers'))
-h = int(config.get('run_properties','h'))
-num_classes = int(config.get('run_properties','num_classes'))
+vocab_size = config_file.vocab_size
+sent_leng = config_file.sent_leng
+embedding_vector_features = config_file.embedding_vector_features
+num_lang = config_file.num_lang
+EPOCHS = config_file.EPOCHS
+BATCH_SIZE = config_file.BATCH_SIZE
+MODEL_SIZE = config_file.MODEL_SIZE
+num_layers = config_file.num_layers
+h = config_file.h
+num_classes = config_file.num_classes
 
 logging.info("Imported the properties from the config file ")
 
@@ -409,7 +412,7 @@ def predict(test_seq):
 
 
 start_time = time.time()
-
+'''
 for e in range(EPOCHS):
     logging.info("Enabling the GPU ")
     with tf.device('GPU:0'):
@@ -427,6 +430,9 @@ for e in range(EPOCHS):
             except Exception as e:
                 print(e)
                 continue
+'''
 
+# Observations: The Model built from scratch is very complex with mulitple hidden layers. therefore the training
+#   process takes very long however, the built model very basic and higher efficiency cannot be achieved.
+# We need to use State Of Art models to achieve higher efficiency.
 
-# Using the pretrained model like BERT or any state of art model.
