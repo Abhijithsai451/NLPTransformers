@@ -1,18 +1,20 @@
 import logging
 import warnings
 
+import numpy as np
 import pandas as pd
 import regex as re
 import tensorflow as tf
+import tqdm
+from keras import Input, Model
+from keras.optimizers import Adam
 from nltk import PorterStemmer
 from nltk.corpus import stopwords
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from tokenizers import Tokenizer, models, pre_tokenizers, decoders, processors
-import config_file
-import tqdm
-import numpy as np
-from  sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OrdinalEncoder
+from transformers import AutoTokenizer, TFAutoModel, TFRobertaForSequenceClassification
 
+import config_file
 
 # Using the pretrained model like BERT or State of Art Model.
 # Using the Model "XLM-roberta-base-language-detection"
@@ -22,6 +24,7 @@ warnings.filterwarnings("ignore")
 
 logging.basicConfig(level=logging.INFO, format='[NLP Transformer] %(process)d-%(levelname)s-%(message)s')
 logging.info("TensorFlow Version:  " + tf.__version__)
+logging.info("GPU Availability:  " + tf.test.gpu_device_name())
 AUTO = tf.data.experimental.AUTOTUNE
 
 # Data Preparation
@@ -43,6 +46,7 @@ it_data['language'] = 'italian'
 pt_data['language'] = 'portuguese'
 ru_data['language'] = 'russian'
 tr_data['language'] = 'turkish'
+logging.info("Created the individual dataframes for comments on each language")
 
 corpus = []
 
@@ -69,29 +73,35 @@ def preprocess_dataframe(data):
     return data
 
 
+def encode_labels(dataframe):
+    encoder = OrdinalEncoder()
+    dataframe['language'] = encoder.fit_transform(dataframe[['language']])
+    dataframe['language'] = dataframe['language']/6
+    return dataframe
+
+logging.info("Preprocessing the individual dataframes -> Removing Special Chars, Stemming, Removing Stop words")
 esp_data = preprocess_dataframe(es_data)
 frh_data = preprocess_dataframe(fr_data)
 itl_data = preprocess_dataframe(it_data)
 ptg_data = preprocess_dataframe(pt_data)
 rus_data = preprocess_dataframe(ru_data)
 trh_data = preprocess_dataframe(tr_data)
-
+logging.info("Concatinating the individual dataframes to a single main dataframe.")
 data = pd.concat([
-    esp_data[['comment_text', 'language', 'clean_text']],
-    frh_data[['comment_text', 'language', 'clean_text']],
-    itl_data[['comment_text', 'language', 'clean_text']],
-    ptg_data[['comment_text', 'language', 'clean_text']],
-    rus_data[['comment_text', 'language', 'clean_text']],
-    trh_data[['comment_text', 'language', 'clean_text']]
+    esp_data[['clean_text', 'language']],
+    frh_data[['clean_text', 'language']],
+    itl_data[['clean_text', 'language']],
+    ptg_data[['clean_text', 'language']],
+    rus_data[['clean_text', 'language']],
+    trh_data[['clean_text', 'language']]
 ], ignore_index=True)
+
+data_final = encode_labels(data)
 
 
 # Data Encoding with Tokenizer
 
 def fast_encode(texts, tokenizer, chunk_size=256, maxlen=512):
-    """
-    https://www.kaggle.com/xhlulu/jigsaw-tpu-distilbert-with-huggingface-and-keras
-    """
     tokenizer.enable_truncation(max_length=maxlen)
     tokenizer.enable_padding(max_length=maxlen)
     all_ids = []
@@ -103,31 +113,64 @@ def fast_encode(texts, tokenizer, chunk_size=256, maxlen=512):
 
     return np.array(all_ids)
 
+
 def encode_data(texts, tokenizer, maxlen=512):
     enc_di = tokenizer.batch_encode_plus(
         texts,
-        return_attention_masks=False,
+        return_attention_mask=False,
         return_token_type_ids=False,
         pad_to_max_length=True,
+        truncation=True,
         max_length=maxlen
     )
 
     return np.array(enc_di['input_ids'])
 
-tokenizer = AutoTokenizer.from_pretrained("papluca/xlm-roberta-base-language-detection")
-model = AutoModelForSequenceClassification.from_pretrained("papluca/xlm-roberta-base-language-detection")
+logging.info("Extracting the 'ivanlau/language-detection-fine-tuned-on-xlm-roberta-base' tokenizer")
+tokenizer = AutoTokenizer.from_pretrained("ivanlau/language-detection-fine-tuned-on-xlm-roberta-base")
 
 # Train Test Validation Split data
-X_train, X_test, y_train, y_test = train_test_split(data['clean_text'],data['language'], test_size=0.33, random_state=42)
+logging.info("train test split the data ")
+X_train, X_test, y_train, y_test = train_test_split(data_final['clean_text'], data['language'], test_size=0.25,
+                                                    random_state=42)
+
+X_train = encode_data(X_train.tolist(), tokenizer, maxlen=config_file.sent_leng)
+X_test = encode_data(X_test.tolist(), tokenizer, maxlen=config_file.sent_leng)
 
 
+# Creating Tensorflow Dataset
+logging.info("Creating the tensorflow datasets: train_data")
+train_data = (tf.data.Dataset
+              .from_tensor_slices((X_train, y_train))
+              .repeat()
+              .shuffle(2048)
+              .batch(config_file.BATCH_SIZE)
+              .prefetch(AUTO)
+              )
+logging.info("Creating the tensorflow datasets: test_data")
+test_data = (tf.data.Dataset
+             .from_tensor_slices((X_test, y_test))
+             .batch(config_file.BATCH_SIZE)
+             )
 
 
-X_train = encode_data(X_train.clean_text.values, tokenizer,maxlen= config_file.sent_leng)
-X_test = encode_data(X_test,tokenizer,maxlen=config_file.sent_leng)
+def build_model( max_len = config_file.sent_leng):
+    input_ids = Input(shape=(max_len,), dtype=tf.int32, name='input_ids')
+    transformer = TFRobertaForSequenceClassification.from_pretrained("cardiffnlp/twitter-roberta-base-emotion")
 
-y_test =
+    output_sequence = transformer(input_ids).logits
 
+    model = Model(inputs = input_ids, outputs = output_sequence)
+    model.compile(Adam(lr=1e-5), loss='binary_crossentropy', metrics=['accuracy'],run_eagerly=True)
 
+    return model
 
+logging.info("building the 'ivanlau/language-detection-fine-tuned-on-xlm-roberta-base: Pretrained'")
+model = build_model()
+logging.info("Created the 'XLM Roberta language detection model: Pretrained'")
+print(model.summary())
 
+# Training
+n_steps = X_train.shape[0] // config_file.BATCH_SIZE
+print("n_steps -->>>>>", n_steps)
+result = model.fit(train_data, steps_per_epoch=n_steps, validation_data=test_data, epochs=config_file.EPOCHS)
