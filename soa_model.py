@@ -7,7 +7,7 @@ import regex as re
 import tensorflow as tf
 import tqdm
 from keras import Input, Model
-from keras.optimizers import Adam
+from keras.optimizers import SGD
 from nltk import PorterStemmer
 from nltk.corpus import stopwords
 from sklearn.model_selection import train_test_split
@@ -15,6 +15,8 @@ from sklearn.preprocessing import OrdinalEncoder
 from transformers import AutoTokenizer, TFAutoModel, TFRobertaForSequenceClassification
 
 import config_file
+
+# Neural Machine Translation #
 
 # Using the pretrained model like BERT or State of Art Model.
 # Using the Model "XLM-roberta-base-language-detection"
@@ -114,7 +116,7 @@ def fast_encode(texts, tokenizer, chunk_size=256, maxlen=512):
     return np.array(all_ids)
 
 
-def encode_data(texts, tokenizer, maxlen=512):
+def encode_data(texts, tokenizer, maxlen=150):
     enc_di = tokenizer.batch_encode_plus(
         texts,
         return_attention_mask=False,
@@ -143,7 +145,7 @@ logging.info("Creating the tensorflow datasets: train_data")
 train_data = (tf.data.Dataset
               .from_tensor_slices((X_train, y_train))
               .repeat()
-              .shuffle(2048)
+              .shuffle(600)
               .batch(config_file.BATCH_SIZE)
               .prefetch(AUTO)
               )
@@ -156,12 +158,12 @@ test_data = (tf.data.Dataset
 
 def build_model( max_len = config_file.sent_leng):
     input_ids = Input(shape=(max_len,), dtype=tf.int32, name='input_ids')
-    transformer = TFRobertaForSequenceClassification.from_pretrained("cardiffnlp/twitter-roberta-base-emotion")
-
+    transformer = TFRobertaForSequenceClassification.from_pretrained("xlm-mlm-en-2048")
+ 
     output_sequence = transformer(input_ids).logits
 
     model = Model(inputs = input_ids, outputs = output_sequence)
-    model.compile(Adam(lr=1e-5), loss='binary_crossentropy', metrics=['accuracy'],run_eagerly=True)
+    model.compile(SGD(0.001), loss='binary_crossentropy', metrics=['accuracy'])
 
     return model
 
@@ -174,3 +176,9 @@ print(model.summary())
 n_steps = X_train.shape[0] // config_file.BATCH_SIZE
 print("n_steps -->>>>>", n_steps)
 result = model.fit(train_data, steps_per_epoch=n_steps, validation_data=test_data, epochs=config_file.EPOCHS)
+
+# Required Models to Research
+# RoBERT
+# GottBERT
+# mBERT
+# XLM-R
